@@ -6,35 +6,48 @@ from datetime import datetime, timedelta
 # ---------------------------------------------------------
 # 1. ตั้งค่าหน้าจอ
 # ---------------------------------------------------------
-st.set_page_config(page_title="ระบบติดตามสัญญา & ประเมิน ADL เคส LTC", page_icon="🩺", layout="wide")
+st.set_page_config(page_title="ระบบติดตามสัญญา LTC & ประวัติประเมิน ADL", page_icon="🩺", layout="wide")
 
-DB_NAME = "ltc_contracts_v2.db"
+DB_NAME = "ltc_contracts_v3.db"
 
 # ---------------------------------------------------------
-# 2. เตรียมฐานข้อมูล SQLite (ผู้ป่วย & บัญชีผู้ใช้)
+# 2. เตรียมฐานข้อมูล SQLite (ผู้ป่วย, สัญญา/ADL รายปี, ผู้ใช้งาน)
 # ---------------------------------------------------------
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    # ตารางข้อมูลผู้ป่วย
+    # 1. ตารางข้อมูลหลักของผู้ป่วย
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS patients (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             patient_name TEXT NOT NULL,
+            phone TEXT,
             cg_name TEXT NOT NULL,
             nurse_name TEXT NOT NULL,
-            phone TEXT,
-            start_date DATE NOT NULL,
-            end_date DATE NOT NULL,
-            item_type TEXT NOT NULL,
-            diaper_size TEXT,
-            last_received_date DATE NOT NULL,
-            notes TEXT
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     
-    # ตารางบัญชีผู้ใช้งาน
+    # 2. ตารางประวัติสัญญา & การประเมิน ADL / ของสนับสนุน (1 ผู้ป่วย มีได้หลายสัญญา)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS contracts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            patient_id INTEGER NOT NULL,
+            contract_year INTEGER NOT NULL,
+            start_date DATE NOT NULL,
+            end_date DATE NOT NULL,
+            adl_score INTEGER,
+            adl_group TEXT,
+            item_type TEXT NOT NULL,
+            diaper_size TEXT,
+            last_received_date DATE NOT NULL,
+            notes TEXT,
+            FOREIGN KEY (patient_id) REFERENCES patients (id)
+        )
+    """)
+    
+    # 3. ตารางบัญชีผู้ใช้งาน
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,7 +56,7 @@ def init_db():
         )
     """)
     
-    # สร้างบัญชีเริ่มต้น (admin / 1234) ถ้ายังไม่มีในระบบ
+    # บัญชีเริ่มต้น (admin / 1234)
     cursor.execute("SELECT * FROM users WHERE username = 'admin'")
     if not cursor.fetchone():
         cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", ("admin", "1234"))
@@ -69,7 +82,6 @@ def authentication_page():
     with col2:
         tab_login, tab_register = st.tabs(["🔑 เข้าสู่ระบบ (Log-in)", "📝 ลงทะเบียน (Register)"])
         
-        # --- แท็บ Log-in ---
         with tab_login:
             with st.form("login_form"):
                 username = st.text_input("ชื่อผู้ใช้งาน (Username)")
@@ -94,27 +106,26 @@ def authentication_page():
                     else:
                         st.warning("กรุณากรอกข้อมูลให้ครบถ้วน")
                         
-        # --- แท็บ Register ---
         with tab_register:
             with st.form("register_form"):
                 reg_username = st.text_input("ตั้งชื่อผู้ใช้งาน (Username)")
                 reg_password = st.text_input("ตั้งรหัสผ่าน (Password)", type="password")
-                reg_confirm_password = st.text_input("ยืนยันรหัสผ่านอีกครั้ง", type="password")
+                reg_confirm = st.text_input("ยืนยันรหัสผ่านอีกครั้ง", type="password")
                 submit_reg = st.form_submit_button("ลงทะเบียนบัญชีใหม่", use_container_width=True)
                 
                 if submit_reg:
-                    if reg_username and reg_password and reg_confirm_password:
-                        if reg_password != reg_confirm_password:
-                            st.error("รหัสผ่านและการยืนยันรหัสผ่านไม่ตรงกัน")
+                    if reg_username and reg_password and reg_confirm:
+                        if reg_password != reg_confirm:
+                            st.error("รหัสผ่านไม่ตรงกัน")
                         else:
                             conn = sqlite3.connect(DB_NAME)
                             cursor = conn.cursor()
                             try:
                                 cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (reg_username, reg_password))
                                 conn.commit()
-                                st.success("ลงทะเบียนสำเร็จ! สามารถสลับไปหน้า Log-in เพื่อเข้าสู่ระบบได้เลยครับ")
+                                st.success("ลงทะเบียนสำเร็จ! สามารถเข้าสู่ระบบได้เลย")
                             except sqlite3.IntegrityError:
-                                st.error("ชื่อผู้ใช้งานนี้มีในระบบแล้ว กรุณาใช้ชื่ออื่น")
+                                st.error("ชื่อผู้ใช้งานนี้มีในระบบแล้ว")
                             finally:
                                 conn.close()
                     else:
@@ -133,238 +144,229 @@ if not st.session_state['logged_in']:
 # 4. ส่วนแสดงผลหลัก (หลัง Log-in)
 # ---------------------------------------------------------
 with st.sidebar:
-    st.write(f"👤 ผู้ใช้งานปัจจุบัน: **{st.session_state['user_name']}**")
-    if st.button("🚪 ออกจากระบบ (Logout)", use_container_width=True):
+    st.write(f"👤 ผู้ใช้งาน: **{st.session_state['user_name']}**")
+    if st.button("🚪 ออกจากระบบ", use_container_width=True):
         logout()
 
-st.title("🩺 ระบบติดตามสัญญา LTC & แจ้งเตือนประเมิน ADL ล่วงหน้า 45 วัน")
-st.caption("โรงพยาบาลส่งเสริมสุขภาพตำบลตลุกเทียม - ติดตามสัญญา 1 ปี ประเมิน ADL และของสนับสนุนผู้ป่วย")
+st.title("🩺 ระบบติดตามสัญญา LTC & ประวัติประเมิน ADL ย้อนหลัง")
+st.caption("โรงพยาบาลส่งเสริมสุขภาพตำบลตลุกเทียม - บันทึกสัญญา 1 ปี และเปรียบเทียบประวัติประเมินรายปี")
 
-tab_add, tab_edit, tab_delete = st.tabs(["➕ เพิ่มข้อมูลใหม่", "✏️ แก้ไขข้อมูล", "🗑️ ลบข้อมูล"])
+tab_add, tab_renew, tab_history = st.tabs(["➕ ลงทะเบียนผู้ป่วยใหม่", "🔄 ต่อสัญญาปีถัดไป / ประเมิน ADL", "📜 ดูประวัติย้อนหลัง"])
 
-# --- TAB 1: เพิ่มข้อมูลผู้ป่วยใหม่ ---
+# --- TAB 1: เพิ่มผู้ป่วยใหม่ (สัญญาปีที่ 1) ---
 with tab_add:
     with st.form("add_patient_form", clear_on_submit=True):
-        st.subheader("📋 บันทึกข้อมูลผู้ป่วยใหม่ (สัญญา 1 ปี)")
+        st.subheader("📋 ลงทะเบียนผู้ป่วยใหม่ (สัญญาปีที่ 1)")
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            patient_name = st.text_input("ชื่อ-นามสกุล ผู้ป่วย LTC *", placeholder="เช่น นายสมชาย ใจดี")
-            cg_name = st.text_input("ชื่อ CG ที่ดูแล *", placeholder="เช่น นางสมศรี (CG)")
-            nurse_name = st.text_input("พยาบาลผู้รับผิดชอบ (เคสเมเนเจอร์) *", placeholder="เช่น พว.กานดา")
+            patient_name = st.text_input("ชื่อ-นามสกุล ผู้ป่วย LTC *", placeholder="นายสมชาย ใจดี")
+            phone = st.text_input("เบอร์โทรศัพท์ติดต่อ", placeholder="081-xxx-xxxx")
+            cg_name = st.text_input("ชื่อ CG ที่ดูแล *", placeholder="นางสมศรี (CG)")
+            nurse_name = st.text_input("พยาบาลเคสเมเนเจอร์ *", placeholder="พว.กานดา")
             
         with col2:
-            phone = st.text_input("เบอร์โทรศัพท์ติดต่อ", placeholder="081-xxx-xxxx")
-            start_date = st.date_input("วันเริ่มสัญญา LTC", datetime.now().date(), key="add_start")
-            # คำนวณสัญญา 1 ปี (365 วัน) ให้อัตโนมัติ
+            start_date = st.date_input("วันเริ่มสัญญา", datetime.now().date(), key="add_start")
             default_end = start_date + timedelta(days=365)
-            end_date = st.date_input("วันหมดอายุสัญญา LTC (1 ปี)", default_end, key="add_end")
+            end_date = st.date_input("วันหมดสัญญา (1 ปี)", default_end, key="add_end")
+            
+            adl_score = st.number_input("คะแนน ADL", min_value=0, max_value=20, value=10)
+            adl_group = st.selectbox("กลุ่มติดบ้าน/ติดเตียง", ["ติดสังคม (12-20)", "ติดบ้าน (5-11)", "ติดเตียง (0-4)"])
 
         with col3:
-            st.markdown("**📦 ของสนับสนุนที่ได้รับครั้งล่าสุด**")
-            item_type = st.radio(
-                "รายการของที่ได้รับ *",
-                ["นม", "ผ้าอ้อมผู้ใหญ่"],
-                horizontal=True,
-                key="add_item"
-            )
-            
+            item_type = st.radio("รายการของสนับสนุน *", ["นม", "ผ้าอ้อมผู้ใหญ่"], horizontal=True, key="add_item")
             diaper_size = "-"
             if item_type == "ผ้าอ้อมผู้ใหญ่":
-                diaper_size = st.selectbox(
-                    "ระบุขนาดผ้าอ้อม (Size) *",
-                    ["M", "L", "XL", "XXL", "อื่นๆ (ระบุในหมายเหตุ)"],
-                    key="add_size"
-                )
+                diaper_size = st.selectbox("ขนาดผ้าอ้อม (Size) *", ["M", "L", "XL", "XXL", "อื่นๆ"], key="add_size")
             
-            last_received_date = st.date_input("วันที่ได้รับของครั้งล่าสุด", datetime.now().date(), key="add_last")
+            last_received_date = st.date_input("วันที่รับของล่าสุด", datetime.now().date(), key="add_last")
 
-        notes = st.text_area("หมายเหตุเพิ่มเติม", placeholder="เช่น ผลประเมิน ADL ล่าสุด / พิกัดบ้าน...", key="add_notes")
-        
-        submitted = st.form_submit_button("💾 บันทึกข้อมูลใหม่", use_container_width=True)
+        notes = st.text_area("หมายเหตุเพิ่มเติม", placeholder="ข้อความบันทึกเพิ่มเติม...", key="add_notes")
+        submitted = st.form_submit_button("💾 บันทึกผู้ป่วยและสัญญาปีที่ 1", use_container_width=True)
         
         if submitted:
             if patient_name and cg_name and nurse_name:
                 conn = sqlite3.connect(DB_NAME)
                 cursor = conn.cursor()
+                # 1. บันทึกผู้ป่วย
+                cursor.execute("INSERT INTO patients (patient_name, phone, cg_name, nurse_name) VALUES (?, ?, ?, ?)",
+                               (patient_name, phone, cg_name, nurse_name))
+                patient_id = cursor.lastrowid
+                
+                # 2. บันทึกสัญญาปีที่ 1
                 cursor.execute("""
-                    INSERT INTO patients (patient_name, cg_name, nurse_name, phone, start_date, end_date, item_type, diaper_size, last_received_date, notes)
+                    INSERT INTO contracts (patient_id, contract_year, start_date, end_date, adl_score, adl_group, item_type, diaper_size, last_received_date, notes)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (patient_name, cg_name, nurse_name, phone, 
-                      start_date.strftime("%Y-%m-%d"), 
-                      end_date.strftime("%Y-%m-%d"), 
-                      item_type, diaper_size, 
-                      last_received_date.strftime("%Y-%m-%d"), notes))
+                """, (patient_id, 1, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"),
+                      adl_score, adl_group, item_type, diaper_size, last_received_date.strftime("%Y-%m-%d"), notes))
+                
                 conn.commit()
                 conn.close()
-                st.success(f"บันทึกข้อมูลคุณ {patient_name} เรียบร้อยแล้ว!")
+                st.success(f"บันทึกข้อมูลคุณ {patient_name} (สัญญาปีที่ 1) เรียบร้อยแล้ว!")
                 st.rerun()
             else:
                 st.error("กรุณากรอกข้อมูลที่มีเครื่องหมาย * ให้ครบถ้วน")
 
-# ดึงข้อมูลจากฐานข้อมูล
+# ดึงข้อมูลผู้ป่วยและสัญญาล่าสุด
 conn = sqlite3.connect(DB_NAME)
-df_all = pd.read_sql_query("SELECT * FROM patients ORDER BY id DESC", conn)
+query_latest = """
+    SELECT p.id as patient_id, p.patient_name, p.phone, p.cg_name, p.nurse_name,
+           c.id as contract_id, c.contract_year, c.start_date, c.end_date, 
+           c.adl_score, c.adl_group, c.item_type, c.diaper_size, c.last_received_date, c.notes
+    FROM patients p
+    JOIN contracts c ON p.id = c.patient_id
+    WHERE c.id IN (SELECT MAX(id) FROM contracts GROUP BY patient_id)
+    ORDER BY c.end_date ASC
+"""
+df_latest = pd.read_sql_query(query_latest, conn)
 conn.close()
 
-# --- TAB 2: แก้ไขข้อมูลผู้ป่วย ---
-with tab_edit:
-    if not df_all.empty:
-        patient_options = {f"ID {row['id']}: {row['patient_name']}": row['id'] for _, row in df_all.iterrows()}
-        selected_patient_str = st.selectbox("เลือกรายชื่อผู้ป่วยที่ต้องการแก้ไข:", list(patient_options.keys()))
-        selected_id = patient_options[selected_patient_str]
+# --- TAB 2: ต่อสัญญาปีถัดไป / อัปเดตการประเมิน ADL ---
+with tab_renew:
+    if not df_latest.empty:
+        patient_options = {f"ID {row['patient_id']}: {row['patient_name']} (สัญญาล่าสุด: ปีที่ {row['contract_year']})": row for _, row in df_latest.iterrows()}
+        selected_patient_str = st.selectbox("เลือกผู้ป่วยที่ต้องการต่อสัญญา/ประเมิน ADL รอบใหม่:", list(patient_options.keys()))
+        selected_row = patient_options[selected_patient_str]
         
-        p_data = df_all[df_all['id'] == selected_id].iloc[0]
+        next_year = selected_row['contract_year'] + 1
+        st.info(f"💡 กำลังทำรายการ: **ต่อสัญญาปีที่ {next_year}** สำหรับคุณ **{selected_row['patient_name']}** (ข้อมูลเดิมปีที่ {selected_row['contract_year']} จะถูกเก็บเป็นประวัติไว้)")
         
-        with st.form("edit_patient_form"):
-            st.subheader(f"✏️ แก้ไขข้อมูล: {p_data['patient_name']}")
+        with st.form("renew_form"):
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                edit_patient_name = st.text_input("ชื่อ-นามสกุล ผู้ป่วย LTC *", value=p_data['patient_name'])
-                edit_cg_name = st.text_input("ชื่อ CG ที่ดูแล *", value=p_data['cg_name'])
-                edit_nurse_name = st.text_input("พยาบาลผู้รับผิดชอบ *", value=p_data['nurse_name'])
+                st.markdown(f"**ข้อมูลผู้ป่วย**")
+                st.write(f"- ชื่อ-สกุล: {selected_row['patient_name']}")
+                ren_cg = st.text_input("CG ที่ดูแล", value=selected_row['cg_name'])
+                ren_nurse = st.text_input("พยาบาลเคสเมเนเจอร์", value=selected_row['nurse_name'])
                 
             with col2:
-                edit_phone = st.text_input("เบอร์โทรศัพท์ติดต่อ", value=p_data['phone'] if p_data['phone'] else "")
-                edit_start_date = st.date_input("วันเริ่มสัญญา LTC", datetime.strptime(p_data['start_date'], "%Y-%m-%d").date())
-                edit_end_date = st.date_input("วันหมดอายุสัญญา LTC", datetime.strptime(p_data['end_date'], "%Y-%m-%d").date())
+                # วันเริ่มสัญญาใหม่นับจากวันหมดสัญญาเดิม หรือวันปัจจุบัน
+                old_end = datetime.strptime(selected_row['end_date'], "%Y-%m-%d").date()
+                ren_start = st.date_input("วันเริ่มสัญญาปีใหม่", old_end)
+                ren_end = st.date_input("วันหมดสัญญาปีใหม่ (1 ปี)", ren_start + timedelta(days=365))
+                
+                ren_adl_score = st.number_input("คะแนน ADL ประเมินใหม่", min_value=0, max_value=20, value=int(selected_row['adl_score'] if selected_row['adl_score'] else 10))
+                ren_adl_group = st.selectbox("กลุ่มประเมินใหม่", ["ติดสังคม (12-20)", "ติดบ้าน (5-11)", "ติดเตียง (0-4)"])
 
             with col3:
-                st.markdown("**📦 ของสนับสนุนที่ได้รับครั้งล่าสุด**")
-                item_idx = 0 if p_data['item_type'] == "นม" else 1
-                edit_item_type = st.radio("รายการของที่ได้รับ *", ["นม", "ผ้าอ้อมผู้ใหญ่"], index=item_idx, horizontal=True)
+                item_idx = 0 if selected_row['item_type'] == "นม" else 1
+                ren_item_type = st.radio("รายการของที่ได้รับ", ["นม", "ผ้าอ้อมผู้ใหญ่"], index=item_idx, horizontal=True)
                 
-                size_options = ["M", "L", "XL", "XXL", "อื่นๆ (ระบุในหมายเหตุ)"]
-                default_size_idx = size_options.index(p_data['diaper_size']) if p_data['diaper_size'] in size_options else 0
+                size_opts = ["M", "L", "XL", "XXL", "อื่นๆ"]
+                d_idx = size_opts.index(selected_row['diaper_size']) if selected_row['diaper_size'] in size_opts else 0
+                ren_diaper_size = "-"
+                if ren_item_type == "ผ้าอ้อมผู้ใหญ่":
+                    ren_diaper_size = st.selectbox("ขนาดผ้าอ้อม (Size)", size_opts, index=d_idx)
                 
-                edit_diaper_size = "-"
-                if edit_item_type == "ผ้าอ้อมผู้ใหญ่":
-                    edit_diaper_size = st.selectbox("ระบุขนาดผ้าอ้อม (Size) *", size_options, index=default_size_idx)
-                
-                edit_last_received_date = st.date_input("วันที่ได้รับของครั้งล่าสุด", datetime.strptime(p_data['last_received_date'], "%Y-%m-%d").date())
+                ren_last_date = st.date_input("วันที่รับของรอบใหม่", datetime.now().date())
 
-            edit_notes = st.text_area("หมายเหตุเพิ่มเติม", value=p_data['notes'] if p_data['notes'] else "")
+            ren_notes = st.text_area("หมายเหตุการต่อสัญญา/ประเมิน", placeholder=f"บันทึกประเมิน ADL รอบปีที่ {next_year}...")
             
-            update_submitted = st.form_submit_button("🔄 อัปเดตข้อมูล", use_container_width=True)
+            renew_submitted = st.form_submit_button(f"🔄 บันทึกการต่อสัญญาปีที่ {next_year}", use_container_width=True)
             
-            if update_submitted:
-                if edit_patient_name and edit_cg_name and edit_nurse_name:
-                    conn = sqlite3.connect(DB_NAME)
-                    cursor = conn.cursor()
-                    cursor.execute("""
-                        UPDATE patients 
-                        SET patient_name=?, cg_name=?, nurse_name=?, phone=?, start_date=?, end_date=?, item_type=?, diaper_size=?, last_received_date=?, notes=?
-                        WHERE id=?
-                    """, (edit_patient_name, edit_cg_name, edit_nurse_name, edit_phone,
-                          edit_start_date.strftime("%Y-%m-%d"), 
-                          edit_end_date.strftime("%Y-%m-%d"), 
-                          edit_item_type, edit_diaper_size, 
-                          edit_last_received_date.strftime("%Y-%m-%d"), edit_notes, selected_id))
-                    conn.commit()
-                    conn.close()
-                    st.success(f"อัปเดตข้อมูลคุณ {edit_patient_name} เรียบร้อยแล้ว!")
-                    st.rerun()
-                else:
-                    st.error("กรุณากรอกข้อมูลที่มีเครื่องหมาย * ให้ครบถ้วน")
-    else:
-        st.info("ยังไม่มีข้อมูลผู้ป่วยในระบบสำหรับแก้ไข")
-
-# --- TAB 3: ลบข้อมูลผู้ป่วย ---
-with tab_delete:
-    if not df_all.empty:
-        patient_del_options = {f"ID {row['id']}: {row['patient_name']} (สัญญาหมด: {row['end_date']})": row['id'] for _, row in df_all.iterrows()}
-        selected_del_str = st.selectbox("เลือกรายชื่อผู้ป่วยที่ต้องการลบ:", list(patient_del_options.keys()), key="del_select")
-        selected_del_id = patient_del_options[selected_del_str]
-        
-        del_p_name = df_all[df_all['id'] == selected_del_id].iloc[0]['patient_name']
-        
-        st.warning(f"⚠️ คุณกำลังจะลบข้อมูลของ: **{del_p_name}** (การลบจะไม่สามารถย้อนกลับได้)")
-        
-        col_del1, col_del2 = st.columns([1, 4])
-        with col_del1:
-            if st.button("❌ ยืนยันการลบข้อมูล", type="primary", use_container_width=True):
+            if renew_submitted:
                 conn = sqlite3.connect(DB_NAME)
                 cursor = conn.cursor()
-                cursor.execute("DELETE FROM patients WHERE id=?", (selected_del_id,))
+                
+                # อัปเดตข้อมูล CG/Nurse หากมีการเปลี่ยนแปลง
+                cursor.execute("UPDATE patients SET cg_name=?, nurse_name=? WHERE id=?", (ren_cg, ren_nurse, selected_row['patient_id']))
+                
+                # เพิ่มสัญญาฉบับใหม่ลงตาราง contracts (ไม่ทับอันเก่า)
+                cursor.execute("""
+                    INSERT INTO contracts (patient_id, contract_year, start_date, end_date, adl_score, adl_group, item_type, diaper_size, last_received_date, notes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (selected_row['patient_id'], next_year, ren_start.strftime("%Y-%m-%d"), ren_end.strftime("%Y-%m-%d"),
+                      ren_adl_score, ren_adl_group, ren_item_type, ren_diaper_size, ren_last_date.strftime("%Y-%m-%d"), ren_notes))
+                
                 conn.commit()
                 conn.close()
-                st.success(f"ลบข้อมูลคุณ {del_p_name} เรียบร้อยแล้ว!")
+                st.success(f"บันทึกการต่อสัญญาปีที่ {next_year} ของคุณ {selected_row['patient_name']} เรียบร้อยแล้ว!")
                 st.rerun()
     else:
-        st.info("ยังไม่มีข้อมูลผู้ป่วยในระบบสำหรับลบ")
+        st.info("ยังไม่มีข้อมูลผู้ป่วยในระบบ")
+
+# --- TAB 3: ดูประวัติย้อนหลัง (Timeline) ---
+with tab_history:
+    if not df_latest.empty:
+        conn = sqlite3.connect(DB_NAME)
+        all_patients = pd.read_sql_query("SELECT * FROM patients", conn)
+        conn.close()
+        
+        selected_hist_id = st.selectbox("เลือกผู้ป่วยเพื่อดูประวัติสัญญาย้อนหลังทุกปี:", 
+                                         options=all_patients['id'], 
+                                         format_func=lambda x: f"ID {x}: {all_patients[all_patients['id']==x]['patient_name'].values[0]}")
+        
+        if selected_hist_id:
+            conn = sqlite3.connect(DB_NAME)
+            df_history = pd.read_sql_query("""
+                SELECT contract_year as 'สัญญาปีที่', start_date as 'วันเริ่มสัญญา', end_date as 'วันหมดสัญญา',
+                       adl_score as 'คะแนน ADL', adl_group as 'ผลประเมิน ADL', item_type as 'ของสนับสนุน',
+                       diaper_size as 'ขนาดผ้าอ้อม', last_received_date as 'วันที่รับของ', notes as 'หมายเหตุ'
+                FROM contracts
+                WHERE patient_id = ?
+                ORDER BY contract_year DESC
+            """, conn, params=(selected_hist_id,))
+            conn.close()
+            
+            p_info = all_patients[all_patients['id'] == selected_hist_id].iloc[0]
+            st.markdown(f"### 📜 ประวัติสัญญาย้อนหลัง: คุณ **{p_info['patient_name']}**")
+            st.write(f"📞 เบอร์โทร: {p_info['phone']} | CG: {p_info['cg_name']} | พยาบาล: {p_info['nurse_name']}")
+            
+            st.dataframe(df_history, use_container_width=True, hide_index=True)
+    else:
+        st.info("ยังไม่มีประวัติในระบบ")
 
 # ---------------------------------------------------------
-# 5. การคำนวณการแจ้งเตือนต่อสัญญา & ประเมิน ADL (ล่วงหน้า 45 วัน)
+# 5. การคำนวณการแจ้งเตือนต่อสัญญา & ประเมิน ADL (45 วัน)
 # ---------------------------------------------------------
-if not df_all.empty:
+if not df_latest.empty:
     today = datetime.now().date()
-    df_all['end_dt'] = pd.to_datetime(df_all['end_date']).dt.date
-    df_all['จำนวนวันคงเหลือ'] = df_all['end_dt'].apply(lambda x: (x - today).days)
+    df_latest['end_dt'] = pd.to_datetime(df_latest['end_date']).dt.date
+    df_latest['จำนวนวันคงเหลือ'] = df_latest['end_dt'].apply(lambda x: (x - today).days)
     
-    # เงื่อนไขแจ้งเตือนต่อสัญญา & ประเมิน ADL ล่วงหน้า 45 วัน
     def get_status_adl(days):
         if days < 0:
             return "🔴 สัญญาหมดอายุแล้ว"
         elif days <= 45:
-            return "🟡 ต้องประเมิน ADL / เตรียมต่อสัญญา (<= 45 วัน)"
+            return "🟡 ต้องประเมิน ADL / ต่อสัญญา (<= 45 วัน)"
         else:
             return "🟢 ปกติ (> 45 วัน)"
             
-    df_all['สถานะต่อสัญญา & ADL'] = df_all['จำนวนวันคงเหลือ'].apply(get_status_adl)
+    df_latest['สถานะสัญญา'] = df_latest['จำนวนวันคงเหลือ'].apply(get_status_adl)
     
     st.divider()
     
-    # การ์ดสรุปตัวเลข
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("ผู้ป่วย LTC ทั้งหมด", f"{len(df_all)} ราย")
-    c2.metric("🟡 ต้องประเมิน ADL (<= 45 วัน)", f"{len(df_all[(df_all['จำนวนวันคงเหลือ'] >= 0) & (df_all['จำนวนวันคงเหลือ'] <= 45)])} ราย")
-    c3.metric("🔴 สัญญาหมดอายุแล้ว", f"{len(df_all[df_all['จำนวนวันคงเหลือ'] < 0])} ราย")
-    c4.metric("📦 รับผ้าอ้อมผู้ใหญ่", f"{len(df_all[df_all['item_type'] == 'ผ้าอ้อมผู้ใหญ่'])} ราย")
+    c1.metric("ผู้ป่วย LTC ทั้งหมด", f"{len(df_latest)} ราย")
+    c2.metric("🟡 ต้องประเมิน ADL (<= 45 วัน)", f"{len(df_latest[(df_latest['จำนวนวันคงเหลือ'] >= 0) & (df_latest['จำนวนวันคงเหลือ'] <= 45)])} ราย")
+    c3.metric("🔴 สัญญาหมดอายุแล้ว", f"{len(df_latest[df_latest['จำนวนวันคงเหลือ'] < 0])} ราย")
+    c4.metric("📦 รับผ้าอ้อมผู้ใหญ่", f"{len(df_latest[df_latest['item_type'] == 'ผ้าอ้อมผู้ใหญ่'])} ราย")
 
-    # กล่องเตือนพิเศษหากมีเคสที่ต้องประเมิน ADL ด่วนภายใน 45 วัน
-    adl_urgent = df_all[(df_all['จำนวนวันคงเหลือ'] >= 0) & (df_all['จำนวนวันคงเหลือ'] <= 45)]
+    adl_urgent = df_latest[(df_latest['จำนวนวันคงเหลือ'] >= 0) & (df_latest['จำนวนวันคงเหลือ'] <= 45)]
     if not adl_urgent.empty:
-        st.warning("⚠️ **แจ้งเตือนเคสที่ต้องดำเนินการประเมิน ADL ก่อนต่อสัญญา (ภายใน 45 วัน):**")
+        st.warning("⚠️ **แจ้งเตือนเคสที่ต้องประเมิน ADL ก่อนต่อสัญญา (ภายใน 45 วัน):**")
         for _, row in adl_urgent.iterrows():
-            st.write(f"- **{row['patient_name']}** (CG: {row['cg_name']} / พยาบาล: {row['nurse_name']}) ➔ หมดสัญญา **{row['end_date']}** (เหลืออีก **{row['จำนวนวันคงเหลือ']} วัน**)")
+            st.write(f"- **{row['patient_name']}** (สัญญาปีที่ {row['contract_year']}) ➔ หมดสัญญา **{row['end_date']}** (เหลืออีก **{row['จำนวนวันคงเหลือ']} วัน**)")
 
-    st.subheader("📋 รายชื่อผู้ป่วย ประวัติรับของสนับสนุน และสถานะต่อสัญญา")
+    st.subheader("📋 สถานะสัญญาล่าสุดของเคสทั้งหมด")
     
-    filter_item = st.radio("กรองตามของที่ได้รับ:", ["ทั้งหมด", "นม", "ผ้าอ้อมผู้ใหญ่"], horizontal=True, key="filter_radio")
-    
-    filtered_df = df_all.copy()
-    if filter_item != "ทั้งหมด":
-        filtered_df = filtered_df[filtered_df['item_type'] == filter_item]
-        
-    display_df = filtered_df[[
-        'id', 'patient_name', 'cg_name', 'nurse_name', 'phone', 
-        'start_date', 'end_date', 'จำนวนวันคงเหลือ', 'สถานะต่อสัญญา & ADL',
-        'item_type', 'diaper_size', 'last_received_date', 'notes'
+    display_df = df_latest[[
+        'patient_id', 'patient_name', 'contract_year', 'cg_name', 'nurse_name',
+        'start_date', 'end_date', 'จำนวนวันคงเหลือ', 'สถานะสัญญา',
+        'adl_score', 'adl_group', 'item_type', 'diaper_size'
     ]].rename(columns={
-        'id': 'ID',
+        'patient_id': 'ID',
         'patient_name': 'ชื่อผู้ป่วย LTC',
+        'contract_year': 'สัญญาปีที่',
         'cg_name': 'CG ผู้ดูแล',
-        'nurse_name': 'พยาบาลเคสเมเนเจอร์',
-        'phone': 'เบอร์โทร',
+        'nurse_name': 'พยาบาล',
         'start_date': 'วันเริ่มสัญญา',
-        'end_date': 'วันหมดสัญญา (1 ปี)',
-        'item_type': 'ของที่ได้รับ',
-        'diaper_size': 'ขนาดผ้าอ้อม (Size)',
-        'last_received_date': 'วันที่รับของล่าสุด',
-        'notes': 'หมายเหตุ'
+        'end_date': 'วันหมดสัญญา',
+        'adl_score': 'คะแนน ADL',
+        'adl_group': 'กลุ่ม ADL',
+        'item_type': 'ของสนับสนุน',
+        'diaper_size': 'ไซส์ผ้าอ้อม'
     })
     
-    st.dataframe(
-        display_df,
-        column_config={
-            "จำนวนวันคงเหลือ": st.column_config.NumberColumn(
-                "จำนวนวันคงเหลือ",
-                format="%d วัน"
-            )
-        },
-        use_container_width=True,
-        hide_index=True
-    )
-else:
-    st.info("ยังไม่มีข้อมูลในระบบ สามารถกรอกแบบฟอร์มด้านบนเพื่อเพิ่มรายชื่อแรกได้เลยครับ")
+    st.dataframe(display_df, use_container_width=True, hide_index=True)

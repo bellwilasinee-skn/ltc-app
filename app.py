@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 # ---------------------------------------------------------
 # 1. ตั้งค่าหน้าจอ
 # ---------------------------------------------------------
-st.set_page_config(page_title="ระบบติดตามสัญญา & ของสนับสนุน LTC", page_icon="🩺", layout="wide")
+st.set_page_config(page_title="ระบบติดตามสัญญา & ประเมิน ADL เคส LTC", page_icon="🩺", layout="wide")
 
 DB_NAME = "ltc_contracts_v2.db"
 
@@ -63,7 +63,7 @@ if 'user_name' not in st.session_state:
 
 def authentication_page():
     st.markdown("<h2 style='text-align: center;'>🔒 ระบบจัดการข้อมูลผู้ป่วย LTC</h2>", unsafe_allow_html=True)
-    st.caption("<p style='text-align: center;'>กรุณาเข้าสู่ระบบ หรือลงทะเบียนบัญชีผู้ใช้งานใหม่</p>", unsafe_allow_html=True)
+    st.caption("<p style='text-align: center;'>รพ.สต.ตลุกเทียม - กรุณาเข้าสู่ระบบ หรือลงทะเบียนบัญชีผู้ใช้งานใหม่</p>", unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
@@ -137,15 +137,15 @@ with st.sidebar:
     if st.button("🚪 ออกจากระบบ (Logout)", use_container_width=True):
         logout()
 
-st.title("🩺 ระบบติดตามสัญญา LTC & ประวัติของสนับสนุนผู้ป่วย")
-st.caption("ระบบบันทึก แก้ไข ลบข้อมูลการต่อสัญญา และการได้รับ นม / ผ้าอ้อมผู้ใหญ่ สำหรับเคส LTC")
+st.title("🩺 ระบบติดตามสัญญา LTC & แจ้งเตือนประเมิน ADL ล่วงหน้า 45 วัน")
+st.caption("โรงพยาบาลส่งเสริมสุขภาพตำบลตลุกเทียม - ติดตามสัญญา 1 ปี ประเมิน ADL และของสนับสนุนผู้ป่วย")
 
 tab_add, tab_edit, tab_delete = st.tabs(["➕ เพิ่มข้อมูลใหม่", "✏️ แก้ไขข้อมูล", "🗑️ ลบข้อมูล"])
 
 # --- TAB 1: เพิ่มข้อมูลผู้ป่วยใหม่ ---
 with tab_add:
     with st.form("add_patient_form", clear_on_submit=True):
-        st.subheader("📋 บันทึกข้อมูลผู้ป่วยใหม่")
+        st.subheader("📋 บันทึกข้อมูลผู้ป่วยใหม่ (สัญญา 1 ปี)")
         col1, col2, col3 = st.columns(3)
         
         with col1:
@@ -156,7 +156,9 @@ with tab_add:
         with col2:
             phone = st.text_input("เบอร์โทรศัพท์ติดต่อ", placeholder="081-xxx-xxxx")
             start_date = st.date_input("วันเริ่มสัญญา LTC", datetime.now().date(), key="add_start")
-            end_date = st.date_input("วันหมดอายุสัญญา LTC", datetime.now().date() + timedelta(days=365), key="add_end")
+            # คำนวณสัญญา 1 ปี (365 วัน) ให้อัตโนมัติ
+            default_end = start_date + timedelta(days=365)
+            end_date = st.date_input("วันหมดอายุสัญญา LTC (1 ปี)", default_end, key="add_end")
 
         with col3:
             st.markdown("**📦 ของสนับสนุนที่ได้รับครั้งล่าสุด**")
@@ -177,7 +179,7 @@ with tab_add:
             
             last_received_date = st.date_input("วันที่ได้รับของครั้งล่าสุด", datetime.now().date(), key="add_last")
 
-        notes = st.text_area("หมายเหตุเพิ่มเติม", placeholder="เช่น ปรับเปลี่ยนไซส์จาก L เป็น XL / พิกัดบ้าน...", key="add_notes")
+        notes = st.text_area("หมายเหตุเพิ่มเติม", placeholder="เช่น ผลประเมิน ADL ล่าสุด / พิกัดบ้าน...", key="add_notes")
         
         submitted = st.form_submit_button("💾 บันทึกข้อมูลใหม่", use_container_width=True)
         
@@ -200,7 +202,7 @@ with tab_add:
             else:
                 st.error("กรุณากรอกข้อมูลที่มีเครื่องหมาย * ให้ครบถ้วน")
 
-# ดึงข้อมูลมาเตรียมสำหรับ แก้ไข / ลบ / แสดงผล
+# ดึงข้อมูลจากฐานข้อมูล
 conn = sqlite3.connect(DB_NAME)
 df_all = pd.read_sql_query("SELECT * FROM patients ORDER BY id DESC", conn)
 conn.close()
@@ -293,32 +295,39 @@ with tab_delete:
         st.info("ยังไม่มีข้อมูลผู้ป่วยในระบบสำหรับลบ")
 
 # ---------------------------------------------------------
-# 5. ส่วนแสดงตารางข้อมูลและระบบคำนวณการแจ้งเตือน
+# 5. การคำนวณการแจ้งเตือนต่อสัญญา & ประเมิน ADL (ล่วงหน้า 45 วัน)
 # ---------------------------------------------------------
 if not df_all.empty:
     today = datetime.now().date()
     df_all['end_dt'] = pd.to_datetime(df_all['end_date']).dt.date
     df_all['จำนวนวันคงเหลือ'] = df_all['end_dt'].apply(lambda x: (x - today).days)
     
-    def get_status(days):
+    # เงื่อนไขแจ้งเตือนต่อสัญญา & ประเมิน ADL ล่วงหน้า 45 วัน
+    def get_status_adl(days):
         if days < 0:
-            return "🔴 หมดอายุแล้ว"
-        elif days <= 30:
-            return "🟡 ต้องต่อสัญญา (<= 30 วัน)"
-        elif days <= 60:
-            return "🟠 เฝ้าระวัง (31-60 วัน)"
+            return "🔴 สัญญาหมดอายุแล้ว"
+        elif days <= 45:
+            return "🟡 ต้องประเมิน ADL / เตรียมต่อสัญญา (<= 45 วัน)"
         else:
-            return "🟢 ปกติ (> 60 วัน)"
+            return "🟢 ปกติ (> 45 วัน)"
             
-    df_all['สถานะสัญญา'] = df_all['จำนวนวันคงเหลือ'].apply(get_status)
+    df_all['สถานะต่อสัญญา & ADL'] = df_all['จำนวนวันคงเหลือ'].apply(get_status_adl)
     
     st.divider()
     
+    # การ์ดสรุปตัวเลข
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("ผู้ป่วย LTC ทั้งหมด", f"{len(df_all)} ราย")
-    c2.metric("🔴 หมดอายุสัญญาแล้ว", f"{len(df_all[df_all['จำนวนวันคงเหลือ'] < 0])} ราย")
-    c3.metric("🟡 ต้องต่อสัญญา (<= 30 วัน)", f"{len(df_all[(df_all['จำนวนวันคงเหลือ'] >= 0) & (df_all['จำนวนวันคงเหลือ'] <= 30)])} ราย")
+    c2.metric("🟡 ต้องประเมิน ADL (<= 45 วัน)", f"{len(df_all[(df_all['จำนวนวันคงเหลือ'] >= 0) & (df_all['จำนวนวันคงเหลือ'] <= 45)])} ราย")
+    c3.metric("🔴 สัญญาหมดอายุแล้ว", f"{len(df_all[df_all['จำนวนวันคงเหลือ'] < 0])} ราย")
     c4.metric("📦 รับผ้าอ้อมผู้ใหญ่", f"{len(df_all[df_all['item_type'] == 'ผ้าอ้อมผู้ใหญ่'])} ราย")
+
+    # กล่องเตือนพิเศษหากมีเคสที่ต้องประเมิน ADL ด่วนภายใน 45 วัน
+    adl_urgent = df_all[(df_all['จำนวนวันคงเหลือ'] >= 0) & (df_all['จำนวนวันคงเหลือ'] <= 45)]
+    if not adl_urgent.empty:
+        st.warning("⚠️ **แจ้งเตือนเคสที่ต้องดำเนินการประเมิน ADL ก่อนต่อสัญญา (ภายใน 45 วัน):**")
+        for _, row in adl_urgent.iterrows():
+            st.write(f"- **{row['patient_name']}** (CG: {row['cg_name']} / พยาบาล: {row['nurse_name']}) ➔ หมดสัญญา **{row['end_date']}** (เหลืออีก **{row['จำนวนวันคงเหลือ']} วัน**)")
 
     st.subheader("📋 รายชื่อผู้ป่วย ประวัติรับของสนับสนุน และสถานะต่อสัญญา")
     
@@ -330,7 +339,7 @@ if not df_all.empty:
         
     display_df = filtered_df[[
         'id', 'patient_name', 'cg_name', 'nurse_name', 'phone', 
-        'start_date', 'end_date', 'จำนวนวันคงเหลือ', 'สถานะสัญญา',
+        'start_date', 'end_date', 'จำนวนวันคงเหลือ', 'สถานะต่อสัญญา & ADL',
         'item_type', 'diaper_size', 'last_received_date', 'notes'
     ]].rename(columns={
         'id': 'ID',
@@ -339,7 +348,7 @@ if not df_all.empty:
         'nurse_name': 'พยาบาลเคสเมเนเจอร์',
         'phone': 'เบอร์โทร',
         'start_date': 'วันเริ่มสัญญา',
-        'end_date': 'วันหมดสัญญา',
+        'end_date': 'วันหมดสัญญา (1 ปี)',
         'item_type': 'ของที่ได้รับ',
         'diaper_size': 'ขนาดผ้าอ้อม (Size)',
         'last_received_date': 'วันที่รับของล่าสุด',
@@ -352,10 +361,6 @@ if not df_all.empty:
             "จำนวนวันคงเหลือ": st.column_config.NumberColumn(
                 "จำนวนวันคงเหลือ",
                 format="%d วัน"
-            ),
-            "ขนาดผ้าอ้อม (Size)": st.column_config.TextColumn(
-                "ขนาดผ้าอ้อม (Size)",
-                help="แสดงไซส์เฉพาะกรณีเลือกรับผ้าอ้อมผู้ใหญ่"
             )
         },
         use_container_width=True,
